@@ -93,15 +93,13 @@ Path to ubic log.
 
 =item I<stdout> (optional)
 
-Path to ZooKeeper stdout log.
+Path to stdout log.
 
 ZooKeeper supports custom logging setup, so in most cases this param is meaningless.
 
 =item I<stderr> (optional)
 
-Path to ZooKeeper stderr log.
-
-ZooKeeper supports custom logging setup, so in most cases this param is meaningless.
+Path to stderr log.
 
 =item I<pidfile> (optional)
 
@@ -192,11 +190,7 @@ sub new {
 }
 
 
-=item C<bin()>
 
-Get command-line with all arguments in the arrayref form.
-
-=cut
 
 sub bin {
     my $self = shift;
@@ -206,8 +200,12 @@ sub bin {
     return \@cmd;
 }
 
-sub _ubic_params_list {
-    return qw/status user ubic_log stdout stderr pidfile gen_cfg port/;
+sub _zookeeper_cfg_params_list {
+    return qw/clientPort dataDir tickTime dataLogDir globalOutstandingLimit
+              preAllocSize snapCount traceFile maxClientCnxns clientPortAddress
+              minSessionTimeout maxSessionTimeout electionAlg initLimit
+              leaderServes servers syncLimit cnxTimeout forceSync jute.maxbuffer
+              skipACL/;
 }
 
 =item C<create_cfg_file()>
@@ -221,10 +219,10 @@ sub create_cfg_file {
 
     my $fname = $self->gen_cfg;
     my $tmp_fname = $fname . ".tmp";
-    my %params = %$self;
 
-    for ('myid', _ubic_params_list()) {
-        delete $params{$_};
+    my %params;
+    foreach (_zookeeper_cfg_params_list()) {
+        $params{$_} = $self->{$_} if defined($self->{$_});
     }
     my $servers = delete $params{servers};
 
@@ -274,7 +272,8 @@ sub start_impl {
     $self->create_cfg_file;
     $self->create_myid_file;
 
-    my $daemon_opts = { bin => $self->bin, pidfile => $self->pidfile, term_timeout => 5 };
+    my $cmd = "java " . $self->{java_cmd_opt} . " " . $self->gen_cfg;
+    my $daemon_opts = { bin => [ $cmd ], pidfile => $self->pidfile, term_timeout => 5 };
     for (qw/ubic_log stdout stderr/) {
         $daemon_opts->{$_} = $self->{$_} if defined $self->{$_};
     }
@@ -295,13 +294,19 @@ sub status_impl {
     my $running = check_daemon($self->pidfile);
     return result('not running') unless ($running);
 
-    my $sock = IO::Socket::INET->new(
-        PeerAddr => "localhost",
-        PeerPort => $self->port,
-        Proto    => "tcp",
-        Timeout  => 1,
-        Blocking => 0,
-    ) or return result('not running');
+    my $sock;
+    for (1..10) {
+        $sock = IO::Socket::INET->new(
+            PeerAddr => "localhost",
+            PeerPort => $self->port,
+            Proto    => "tcp",
+            Timeout  => 1,
+            Blocking => 0,
+        );
+        last if ($sock);
+        Time::HiRes::sleep(0.2);
+    }
+    return result('not running') unless ($sock);
 
     $sock->print('ruok');
     my $resp = '';
@@ -312,6 +317,7 @@ sub status_impl {
         last if (length($resp) >= 4);
         Time::HiRes::sleep(0.1);
     }
+
     if ($resp eq 'imok') {
         return result('running');
     } else {
