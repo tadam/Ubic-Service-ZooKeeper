@@ -12,7 +12,6 @@ use warnings;
       clientPort => 2181,
       dataDir    => '/var/lib/zookeeper',
       tickTime   => 2000,
-      dataLogDir => '/var/log/zookeeper',
       initLimit  => 10,
       syncLimit  => 5,
       servers    => {
@@ -29,8 +28,9 @@ use warnings;
       gen_cfg  => '/etc/zookeeper/conf/zoo.cfg',
       pidfile  => '/tmp/zookeeper.pid',
 
-      java_cmd_opt => '-cp /etc/zookeeper/conf:/usr/share/java/zookeeper.jar ' .
-                      '-Dcom.sun.management.jmxremote';
+      java_cp => '/usr/share/java/jline.jar:/usr/share/java/log4j-1.2.jar:' .
+                 '/usr/share/java/xercesImpl.jar:' .
+                 '/usr/share/java/xmlParserAPIs.jar:/usr/share/java/zookeeper.jar',
 });
 
 =head1 DESCRIPTION
@@ -113,11 +113,39 @@ Generated ZooKeeper config file name.
 
 If not specified it is a /tmp/zoo.<clientPort>.cfg.
 
-=item I<java_cmd_opt> (optional)
+=item I<java> (optional)
 
-The last but not least param. C<Ubic::Service::ZooKeeper> don't know anything about zookeeper.jar and another .jar places and other Java specific options (but don't place in C<java_cmd_opt> path to java and path to .cfg file, C<Ubic::Service::ZooKeeper> do it yourself).
+Path to C<java> binary. Default is just "java", so your C<PATH> should be setted properly in default case.
 
-So for successful running ZooKeeper using this module you should pass all needed for C<java> options such as C<-cp> (classpath), system property values (C<-D> flag) and other options. See ZooKeeper administration guide for more specific details.
+=item I<java_cp> (optional)
+
+Java classpath. See ZooKeeper administration guide for more information.
+
+It should be something like this: /usr/share/java/jline.jar:/usr/share/java/log4j-1.2.jar:/usr/share/java/xercesImpl.jar:/usr/share/java/xmlParserAPIs.jar:/usr/share/java/zookeeper.jar
+
+=item I<jmx_enable> (optional)
+
+Enable JMX. Default is C<1>
+
+=item I<jmx_local_only> (optional)
+
+Enable JMX only locally. Default is C<0>.
+
+=item I<zoo_log_dir> (optional)
+
+Where zookeeper will place own logs. Default is C<var/log/zookeeper>.
+
+=item I<zoo_log4j_prop> (optional)
+
+Log4j properties for ZooKeeper. Default is C<INFO,ROLLINGFILE>.
+
+=item I<zoo_main_class> (optional)
+
+Main ZooKeeper class. Default is C<org.apache.zookeeper.server.quorum.QuorumPeerMain>. Typically you don't need to redefine this param.
+
+=item I<java_opts> (optional)
+
+Some additional options that you want to pass to C<java>.
 
 =back
 
@@ -175,8 +203,18 @@ sub new {
         pidfile       => $opt_str,
         port          => $opt_num,
 
-        gen_cfg       => $opt_str,
-        java_cmd_opt  => { %$opt_str, default => '' },
+        gen_cfg        => $opt_str,
+        java           => { %$opt_str, default => 'java' },
+        java_cp        => { type => SCALAR },
+        jmx_enable     => { type => BOOLEAN, default => 1 },
+        jmx_local_only => { type => BOOLEAN, default => 0 },
+        zoo_log_dir    => { %$opt_str, default => '/var/log/zookeeper' },
+        zoo_log4j_prop => { %$opt_str, default => 'INFO,ROLLINGFILE' },
+        zoo_main_class => {
+            %$opt_str,
+            default => 'org.apache.zookeeper.server.quorum.QuorumPeerMain'
+        },
+        java_opts      => { type => SCALAR, default => '' },
     });
 
     if (!$params->{pidfile}) {
@@ -190,14 +228,24 @@ sub new {
 }
 
 
-
-
-sub bin {
+sub _bin {
     my $self = shift;
 
-    my @cmd = ("java", $self->{java_cmd_opt}, $self->gen_cfg);
+    my $cmd = '';
+    $cmd = $self->{java} . " " . $self->{java_opts} . " " .
+           "-cp " . $self->{java_cp} . " ";
+    if ($self->{jmx_enable}) {
+        $cmd .= "-Dcom.sun.management.jmxremote ";
+        unless ($self->{jmx_local_only}) {
+            $cmd .= "-Dcom.sun.management.jmxremote.local.only=false ";
+        }
+    }
+    $cmd .= "-Dzookeeper.log.dir=$self->{zoo_log_dir} ";
+    $cmd .= "-Dzookeeper.root.logger=$self->{zoo_log4j_prop} ";
+    $cmd .= $self->{zoo_main_class} . " ";
+    $cmd .= $self->gen_cfg;
 
-    return \@cmd;
+    return [ $cmd ];
 }
 
 sub _zookeeper_cfg_params_list {
@@ -272,8 +320,7 @@ sub start_impl {
     $self->create_cfg_file;
     $self->create_myid_file;
 
-    my $cmd = "java " . $self->{java_cmd_opt} . " " . $self->gen_cfg;
-    my $daemon_opts = { bin => [ $cmd ], pidfile => $self->pidfile, term_timeout => 5 };
+    my $daemon_opts = { bin => $self->_bin, pidfile => $self->pidfile, term_timeout => 5 };
     for (qw/ubic_log stdout stderr/) {
         $daemon_opts->{$_} = $self->{$_} if defined $self->{$_};
     }
