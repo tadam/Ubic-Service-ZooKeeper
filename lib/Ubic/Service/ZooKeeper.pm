@@ -61,11 +61,15 @@ use Ubic::Result qw(:all);
 Creates new ZooKeeper service. C<$params> is hashref with different ZooKeeper and Ubic params.
 
 ZooKeeper config params: C<clientPort> (default is C<2181>), C<dataDir> (default is C</var/lib/zookeeper>), C<tickTime> (default is C<2000>), C<dataLogDir>, C<globalOutstandingLimit>, C<preAllocSize>, C<snapCount>, C<traceFile>, C<maxClientCnxns>, C<clientPortAddress>, C<minSessionTimeout>, C<maxSessionTimeout>, C<electionAlg>, C<initLimit>,
-C<leaderServer>, C<servers>, C<syncLimit>, C<cnxTimeout>, C<forceSync>, C<jute.maxbuffer>, C<skipACL>.
+C<leaderServer>, C<servers>, C<groups>, C<syncLimit>, C<cnxTimeout>, C<forceSync>, C<skipACL>.
 
 You can find description for all of this params on L<http://zookeeper.apache.org/doc/trunk/zookeeperAdmin.html#sc_configuration>.
 
-One exception is a C<servers> param. It combines C<server.x> and C<weight.x> params from ZooKeeper config. C<servers> is a hashref where key is a number of server and the values is a hashref with keys C<server> and C<weight>.
+Two exceptions here.
+
+The first is a C<servers> param. It combines C<server.x> and C<weight.x> params from ZooKeeper config. C<servers> is a hashref where key is a number of server and the values is a hashref with keys C<server> and C<weight>.
+
+The second is a C<groups> param. It is a hashref, where the key is a number of group and the value is arrayref with server numbers in this group.
 
 All of these params are optional.
 
@@ -180,13 +184,13 @@ sub new {
         initLimit    => $opt_num,
         leaderServes => $opt_str,
         # num, hostname, port and weight of each server
-        servers      => { type => HASHREF, optional => 1 },
+        servers      => { type => HASHREF, default => {} },
+        groups       => { type => HASHREF, default => {} },
         syncLimit    => $opt_num,
         cnxTimeout   => $opt_num,
 
         ### unsafe zookeeper options
         forceSync        => $opt_str,
-        'jute.maxbuffer' => $opt_num,
         skipACL          => $opt_str,
 
 
@@ -205,7 +209,7 @@ sub new {
 
         gen_cfg        => $opt_str,
         java           => { %$opt_str, default => 'java' },
-        java_cp        => { type => SCALAR },
+        java_cp        => { %$opt_str, default => '' },
         jmx_enable     => { type => BOOLEAN, default => 1 },
         jmx_local_only => { type => BOOLEAN, default => 0 },
         zoo_log_dir    => { %$opt_str, default => '/var/log/zookeeper' },
@@ -228,7 +232,7 @@ sub new {
 }
 
 
-sub _bin {
+sub bin {
     my $self = shift;
 
     my $cmd = '';
@@ -252,8 +256,7 @@ sub _zookeeper_cfg_params_list {
     return qw/clientPort dataDir tickTime dataLogDir globalOutstandingLimit
               preAllocSize snapCount traceFile maxClientCnxns clientPortAddress
               minSessionTimeout maxSessionTimeout electionAlg initLimit
-              leaderServes servers syncLimit cnxTimeout forceSync jute.maxbuffer
-              skipACL/;
+              leaderServes servers groups syncLimit cnxTimeout forceSync skipACL/;
 }
 
 =item C<create_cfg_file()>
@@ -273,6 +276,7 @@ sub create_cfg_file {
         $params{$_} = $self->{$_} if defined($self->{$_});
     }
     my $servers = delete $params{servers};
+    my $groups = delete $params{groups};
 
     open(my $tmp_fh, '>', $tmp_fname) or die "Can't open file [$tmp_fname]: $!";
 
@@ -281,6 +285,7 @@ sub create_cfg_file {
         print $tmp_fh "$p=$v\n";
     }
     print $tmp_fh "\n";
+
     foreach my $server_num (sort {$a <=> $b} keys %$servers) {
         my $s = $servers->{$server_num};
         my $server = $s->{server};
@@ -289,6 +294,12 @@ sub create_cfg_file {
         if ($s->{weight}) {
             print $tmp_fh "weight.${server_num}=$s->{weight}\n";
         }
+    }
+    print $tmp_fh "\n";
+
+    foreach my $group_num (sort {$a <=> $b} keys %$groups) {
+        my $group_servers = $groups->{$group_num};
+        print $tmp_fh "group.${group_num}=" . join(":", @$group_servers) . "\n";
     }
 
     close($tmp_fh) or die "Can't close file [$tmp_fname]: $!";
@@ -320,7 +331,7 @@ sub start_impl {
     $self->create_cfg_file;
     $self->create_myid_file;
 
-    my $daemon_opts = { bin => $self->_bin, pidfile => $self->pidfile, term_timeout => 5 };
+    my $daemon_opts = { bin => $self->bin, pidfile => $self->pidfile, term_timeout => 5 };
     for (qw/ubic_log stdout stderr/) {
         $daemon_opts->{$_} = $self->{$_} if defined $self->{$_};
     }
