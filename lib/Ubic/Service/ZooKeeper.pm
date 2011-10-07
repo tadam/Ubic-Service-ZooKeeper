@@ -341,19 +341,14 @@ sub status_impl {
     my $running = check_daemon($self->pidfile);
     return result('not running') unless ($running);
 
-    my $sock;
-    for (1..10) {
-        $sock = IO::Socket::INET->new(
-            PeerAddr => "localhost",
-            PeerPort => $self->port,
-            Proto    => "tcp",
-            Timeout  => 1,
-            Blocking => 0,
-        );
-        last if ($sock);
-        Time::HiRes::sleep(0.2);
-    }
-    return result('not running') unless ($sock);
+    my $sock = IO::Socket::INET->new(
+        PeerAddr => "localhost",
+        PeerPort => $self->port,
+        Proto    => "tcp",
+        Timeout  => 1,
+        Blocking => 0,
+    );
+    return result('broken') unless ($sock);
 
     $sock->print('ruok');
     my $resp = '';
