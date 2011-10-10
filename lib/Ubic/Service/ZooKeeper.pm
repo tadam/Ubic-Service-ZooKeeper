@@ -85,7 +85,9 @@ Default is C<1>.
 
 =item I<status> (optional)
 
-Coderef for checking ZooKeeper status. Default implemetation uses C<ruok> ZooKeeper command.
+Coderef for checking ZooKeeper status. Takes current instance of C<Ubic::Service::ZooKeeper> as a first param.
+
+Default implemetation uses C<ruok> ZooKeeper command.
 
 =item I<user> (optional)
 
@@ -351,6 +353,10 @@ sub status_impl {
 
     my $running = check_daemon($self->pidfile);
     return result('not running') unless ($running);
+
+    if ($self->{status}) {
+        return $self->{status}->($self);
+    }
 
     my $sock = IO::Socket::INET->new(
         PeerAddr => "localhost",
