@@ -30,7 +30,9 @@ sub myid_file : Test {
     my $self = shift;
 
     my $s = Ubic::Service::ZooKeeper->new({
-        dataDir => $self->{tempdir},
+        config => {
+            dataDir => $self->{tempdir},
+        },
         myid    => 3,
     });
 
@@ -78,7 +80,7 @@ sub cfg_file : Test {
 
     my $gen_cfg = catfile($self->{tempdir}, "zoo.cfg");
     my $s = Ubic::Service::ZooKeeper->new({
-        %$cfg_params,
+        config => $cfg_params,
         gen_cfg => $gen_cfg,
     });
     $s->create_cfg_file;

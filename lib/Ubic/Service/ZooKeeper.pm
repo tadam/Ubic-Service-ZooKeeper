@@ -9,16 +9,18 @@ use warnings;
 
   use Ubic::Service::ZooKeeper;
   return Ubic::Service::ZooKeeper->new({
-      clientPort => 2181,
-      dataDir    => '/var/lib/zookeeper',
-      tickTime   => 2000,
-      initLimit  => 10,
-      syncLimit  => 5,
-      servers    => {
-          1 => { server => "host1:2888:3888" },
-          2 => { server => "host2:2888:3888" },
-          3 => { server => "host3:2888:3888" },
-      },
+      config => {
+          clientPort => 2181,
+          dataDir    => '/var/lib/zookeeper',
+          tickTime   => 2000,
+          initLimit  => 10,
+          syncLimit  => 5,
+          servers    => {
+              1 => { server => "host1:2888:3888" },
+              2 => { server => "host2:2888:3888" },
+              3 => { server => "host3:2888:3888" },
+          },
+      }
       myid => 1,
 
       ubic_log => '/var/log/zookeeper/ubic.log',
@@ -52,30 +54,28 @@ use File::Copy qw(move);
 use File::Spec::Functions qw(catfile);
 use IO::Socket::INET;
 use Params::Validate qw(:all);
+use Storable qw(dclone);
 use Time::HiRes qw();
 use Ubic::Daemon qw(:all);
 use Ubic::Result qw(:all);
 
 =item C<new($params)>
 
-Creates new ZooKeeper service. C<$params> is hashref with different ZooKeeper and Ubic params.
+Creates new ZooKeeper service. C<$params> is hashref with different ZooKeeper and Ubic params. The keys are following:
 
-ZooKeeper config params: C<clientPort> (default is C<2181>), C<dataDir> (default is C</var/lib/zookeeper>), C<tickTime> (default is C<2000>), C<dataLogDir>, C<globalOutstandingLimit>, C<preAllocSize>, C<snapCount>, C<traceFile>, C<maxClientCnxns>, C<clientPortAddress>, C<minSessionTimeout>, C<maxSessionTimeout>, C<electionAlg>, C<initLimit>,
-C<leaderServer>, C<servers>, C<groups>, C<syncLimit>, C<cnxTimeout>, C<forceSync>, C<skipACL>.
+=over
 
-You can find description for all of this params on L<http://zookeeper.apache.org/doc/trunk/zookeeperAdmin.html#sc_configuration>.
+=item I<config> (optional)
 
-Two exceptions here.
+All ZooKeeper config related params holds in C<config> key. You can place here any ZooKeeper config keys and their values.
+
+You can find description for this params on L<http://zookeeper.apache.org/doc/trunk/zookeeperAdmin.html#sc_configuration>. You should specify at least C<clientPort>, C<dataDir> and C<tickTime> for successful configuration (defaults are C<2181>, C</var/lib/zookeeper> and C<2000>).
+
+Two exceptions are here.
 
 The first is a C<servers> param. It combines C<server.x> and C<weight.x> params from ZooKeeper config. C<servers> is a hashref where key is a number of server and the values is a hashref with keys C<server> and C<weight>.
 
 The second is a C<groups> param. It is a hashref, where the key is a number of group and the value is arrayref with server numbers in this group.
-
-All of these params are optional.
-
-Remain params are:
-
-=over
 
 =item I<myid> (optional)
 
@@ -139,7 +139,7 @@ Enable JMX only locally. Default is C<0>.
 
 =item I<zoo_log_dir> (optional)
 
-Where zookeeper will place own logs. Default is C<var/log/zookeeper>.
+Where zookeeper will place own logs. Default is C</var/log/zookeeper>.
 
 =item I<zoo_log4j_prop> (optional)
 
@@ -164,41 +164,8 @@ sub new {
     my $opt_str = { type => SCALAR, optional => 1 };
 
     my $params = validate(@_, {
-        # zookeeper config options
-        ### minimum zookeeper config
-        clientPort => { %$opt_num, default => 2181 },
-        dataDir    => { type => SCALAR, default => '/var/lib/zookeeper' },
-        tickTime   => { %$opt_num, default => 2000 },
-
-        ### advanced zookeeper config
-        dataLogDir             => $opt_str,
-        globalOutstandingLimit => $opt_num,
-        preAllocSize           => $opt_num,
-        snapCount              => $opt_num,
-        traceFile              => $opt_str,
-        maxClientCnxns         => $opt_num,
-        clientPortAddress      => $opt_str,
-        minSessionTimeout      => $opt_num,
-        maxSessionTimeout      => $opt_num,
-
-        ### zookeeper cluster options
-        electionAlg  => $opt_num,
-        initLimit    => $opt_num,
-        leaderServes => $opt_str,
-        # num, hostname, port and weight of each server
-        servers      => { type => HASHREF, default => {} },
-        groups       => { type => HASHREF, default => {} },
-        syncLimit    => $opt_num,
-        cnxTimeout   => $opt_num,
-
-        ### unsafe zookeeper options
-        forceSync        => $opt_str,
-        skipACL          => $opt_str,
-
-
-        # zookeeper myid
+        config => { type => HASHREF, default => {} },
         myid => { %$opt_num, default => 1 },
-
 
         # ubic specific options
         status        => { type => CODEREF, optional => 1 },
@@ -223,11 +190,21 @@ sub new {
         java_opts      => { type => SCALAR, default => '' },
     });
 
+    my $config = $params->{config};
+    %$config = (
+        clientPort => 2181,
+        dataDir    => '/var/lib/zookeeper',
+        tickTime   => 2000,
+        %$config,
+    );
+
+    my $clientPort = $config->{clientPort};
+
     if (!$params->{pidfile}) {
-        $params->{pidfile} = '/tmp/zookeeper.' . $params->{clientPort} . '.pid';
+        $params->{pidfile} = catfile('/tmp', 'zookeeper.' . $clientPort . '.pid');
     }
     if (!$params->{gen_cfg}) {
-        $params->{gen_cfg} = '/tmp/zoo.' . $params->{clientPort} . '.cfg';
+        $params->{gen_cfg} = catfile('/tmp', 'zoo.' . $clientPort . '.cfg');
     }
 
     return bless $params => $class;
@@ -254,13 +231,6 @@ sub bin {
     return [ $cmd ];
 }
 
-sub _zookeeper_cfg_params_list {
-    return qw/clientPort dataDir tickTime dataLogDir globalOutstandingLimit
-              preAllocSize snapCount traceFile maxClientCnxns clientPortAddress
-              minSessionTimeout maxSessionTimeout electionAlg initLimit
-              leaderServes servers groups syncLimit cnxTimeout forceSync skipACL/;
-}
-
 =item C<create_cfg_file()>
 
 Generates .cfg file basing on constuctor params.
@@ -273,17 +243,15 @@ sub create_cfg_file {
     my $fname = $self->gen_cfg;
     my $tmp_fname = $fname . ".tmp";
 
-    my %params;
-    foreach (_zookeeper_cfg_params_list()) {
-        $params{$_} = $self->{$_} if defined($self->{$_});
-    }
-    my $servers = delete $params{servers};
-    my $groups = delete $params{groups};
+
+    my $params = dclone($self->{config});
+    my $servers = delete $params->{servers};
+    my $groups = delete $params->{groups};
 
     open(my $tmp_fh, '>', $tmp_fname) or die "Can't open file [$tmp_fname]: $!";
 
-    foreach my $p (sort keys %params) {
-        my $v = $params{$p};
+    foreach my $p (sort keys %$params) {
+        my $v = $params->{$p};
         print $tmp_fh "$p=$v\n";
     }
     print $tmp_fh "\n";
@@ -318,7 +286,7 @@ Generates C<myid> file basing on C<myid> and C<dataDir> params in constructor.
 sub create_myid_file {
     my $self = shift;
 
-    my $fname = catfile($self->{dataDir}, 'myid');
+    my $fname = catfile($self->{config}->{dataDir}, 'myid');
     my $tmp_fname = $fname . ".tmp";
 
     open(my $tmp_fh, '>', $tmp_fname) or die "Can't open file [$tmp_fname]: $!";
@@ -413,7 +381,7 @@ sub port {
     my $self = shift;
 
     return $self->{port} if defined $self->{port};
-    return $self->{clientPort};
+    return $self->{config}->{clientPort};
 }
 
 sub timeout_options {
